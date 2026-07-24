@@ -15,51 +15,38 @@ BOTS = {
     "timesheet": os.getenv("TIMESHEET_TOKEN"),
 }
 
-# ===== HANDLER RIÊNG CHO NUTRITRON BOT =====
+# ===== HANDLERS =====
 async def nutritron_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "🍎 *Nutritron Bot - Hướng dẫn sử dụng*\n\n"
         "/start - Xem hướng dẫn\n"
-        "/help - Trợ giúp\n"
-        "/menu - Xem menu dinh dưỡng",
+        "/help - Trợ giúp",
         parse_mode="Markdown"
     )
 
-async def nutritron_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("📋 Đây là bot dinh dưỡng. Liên hệ @admin để được hỗ trợ.")
-
-# ===== HANDLER RIÊNG CHO TIMESHEET BOT =====
 async def timesheet_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "⏰ *Timesheet Bot - Hướng dẫn sử dụng*\n\n"
         "/start - Xem hướng dẫn\n"
         "/checkin - Check in\n"
-        "/checkout - Check out\n"
-        "/report - Xem báo cáo",
+        "/checkout - Check out",
         parse_mode="Markdown"
     )
 
-async def timesheet_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("📋 Đây là bot chấm công. Liên hệ HR để được hỗ trợ.")
+# ===== KHỞI TẠO APPS 1 LẦN =====
+nutritron_app = None
+timesheet_app = None
 
-# ===== CACHE APPS =====
-apps = {}
-
-def get_nutritron_app(token):
-    if "nutritron" not in apps:
-        app_bot = Application.builder().token(token).build()
-        app_bot.add_handler(CommandHandler("start", nutritron_start))
-        app_bot.add_handler(CommandHandler("help", nutritron_help))
-        apps["nutritron"] = app_bot
-    return apps["nutritron"]
-
-def get_timesheet_app(token):
-    if "timesheet" not in apps:
-        app_bot = Application.builder().token(token).build()
-        app_bot.add_handler(CommandHandler("start", timesheet_start))
-        app_bot.add_handler(CommandHandler("help", timesheet_help))
-        apps["timesheet"] = app_bot
-    return apps["timesheet"]
+def init_apps():
+    global nutritron_app, timesheet_app
+    
+    if BOTS.get("nutritron"):
+        nutritron_app = Application.builder().token(BOTS["nutritron"]).build()
+        nutritron_app.add_handler(CommandHandler("start", nutritron_start))
+    
+    if BOTS.get("timesheet"):
+        timesheet_app = Application.builder().token(BOTS["timesheet"]).build()
+        timesheet_app.add_handler(CommandHandler("start", timesheet_start))
 
 # ===== ROUTES =====
 @app.route("/")
@@ -68,58 +55,34 @@ def home():
 
 @app.route("/webhook/nutritron", methods=["POST"])
 def webhook_nutritron():
-    token = BOTS.get("nutritron")
-    if not token:
-        return "Bot not found", 404
+    if not nutritron_app:
+        return "Nutritron bot not configured", 404
     
     data = request.get_json(force=True)
+    bot = Bot(token=BOTS["nutritron"])
     
     async def process():
-        bot = Bot(token=token)
-        await bot.initialize()
-        
-        app_bot = get_nutritron_app(token)
-        await app_bot.initialize()
-        await app_bot.start()
-        
-        update = Update.de_json(data, bot)
-        await app_bot.process_update(update)
-        
-        await app_bot.stop()
-        await bot.shutdown()
+        async with nutritron_app:
+            update = Update.de_json(data, bot)
+            await nutritron_app.process_update(update)
     
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    loop.run_until_complete(process())
-    
+    asyncio.run(process())
     return Response(status=200)
 
 @app.route("/webhook/timesheet", methods=["POST"])
 def webhook_timesheet():
-    token = BOTS.get("timesheet")
-    if not token:
-        return "Bot not found", 404
+    if not timesheet_app:
+        return "Timesheet bot not configured", 404
     
     data = request.get_json(force=True)
+    bot = Bot(token=BOTS["timesheet"])
     
     async def process():
-        bot = Bot(token=token)
-        await bot.initialize()
-        
-        app_bot = get_timesheet_app(token)
-        await app_bot.initialize()
-        await app_bot.start()
-        
-        update = Update.de_json(data, bot)
-        await app_bot.process_update(update)
-        
-        await app_bot.stop()
-        await bot.shutdown()
+        async with timesheet_app:
+            update = Update.de_json(data, bot)
+            await timesheet_app.process_update(update)
     
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    loop.run_until_complete(process())
-    
+    asyncio.run(process())
     return Response(status=200)
 
 # ===== SETUP WEBHOOKS =====
@@ -131,20 +94,16 @@ async def setup_webhooks():
     
     for name, token in BOTS.items():
         if not token:
-            logger.warning(f"⚠️ {name}: Token not found")
             continue
-        
-        try:
-            bot = Bot(token=token)
-            await bot.initialize()
-            webhook_url = f"{base_url}/webhook/{name}"
-            await bot.set_webhook(url=webhook_url)
-            logger.info(f"✅ {name}: Webhook set!")
-            await bot.shutdown()
-        except Exception as e:
-            logger.error(f"❌ {name}: {e}")
+        bot = Bot(token=token)
+        await bot.initialize()
+        webhook_url = f"{base_url}/webhook/{name}"
+        await bot.set_webhook(url=webhook_url)
+        logger.info(f"✅ {name}: Webhook set!")
+        await bot.shutdown()
 
 if __name__ == "__main__":
+    init_apps()
     asyncio.run(setup_webhooks())
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
