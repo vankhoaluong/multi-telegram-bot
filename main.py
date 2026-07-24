@@ -15,39 +15,53 @@ BOTS = {
     "timesheet": os.getenv("TIMESHEET_TOKEN"),
 }
 
+# Cache Application objects để không phải tạo lại mỗi lần
+apps = {}
+
+def get_app(token):
+    """Lấy hoặc tạo Application cho mỗi bot"""
+    if token not in apps:
+        app_bot = Application.builder().token(token).build()
+        app_bot.add_handler(CommandHandler("start", start))
+        app_bot.add_handler(CommandHandler("help", help_cmd))
+        apps[token] = app_bot
+    return apps[token]
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🤖 Xin chào! Bot đang hoạt động.")
 
 async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("📋 Lệnh: /start, /help")
 
-async def process_telegram_update(token, data):
-    """Xử lý update từ Telegram bất đồng bộ"""
-    bot = Bot(token=token)
-    app_bot = Application.builder().token(token).build()
-    app_bot.add_handler(CommandHandler("start", start))
-    app_bot.add_handler(CommandHandler("help", help_cmd))
-    await app_bot.initialize()
-    
-    update = Update.de_json(data, bot)
-    await app_bot.process_update(update)
-
 @app.route("/")
 def home():
     return "✅ All bots running!", 200
 
 @app.route("/webhook/<bot_name>", methods=["POST"])
-def webhook(bot_name):  # KHÔNG async
+def webhook(bot_name):
     if bot_name not in BOTS or not BOTS[bot_name]:
         return "Bot not found", 404
     
     token = BOTS[bot_name]
     data = request.get_json(force=True)
     
-    # Chạy async trong event loop mới
+    async def process():
+        bot = Bot(token=token)
+        await bot.initialize()  # QUAN TRỌNG: Initialize bot trước!
+        
+        app_bot = get_app(token)
+        await app_bot.initialize()
+        await app_bot.start()
+        
+        update = Update.de_json(data, bot)
+        await app_bot.process_update(update)
+        
+        await app_bot.stop()
+        await bot.shutdown()
+    
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
-    loop.run_until_complete(process_telegram_update(token, data))
+    loop.run_until_complete(process())
     
     return Response(status=200)
 
@@ -64,9 +78,11 @@ async def setup_webhooks():
         
         try:
             bot = Bot(token=token)
+            await bot.initialize()
             webhook_url = f"{base_url}/webhook/{name}"
             await bot.set_webhook(url=webhook_url)
             logger.info(f"✅ {name}: Webhook set!")
+            await bot.shutdown()
         except Exception as e:
             logger.error(f"❌ {name}: {e}")
 
